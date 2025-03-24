@@ -61,28 +61,80 @@ class ImageProcessor:
         Returns:
             List[str]: List of text chunks extracted from the image
         """
+        # Fallback result in case of errors
+        error_result = [f"Error processing image: {os.path.basename(file_path)}. Image analysis features might not be fully available."]
+        
         try:
+            # Check if file exists and is readable
+            if not os.path.exists(file_path):
+                print(f"Error: Image file does not exist: {file_path}")
+                return error_result
+                
+            if not os.access(file_path, os.R_OK):
+                print(f"Error: Image file is not readable: {file_path}")
+                return error_result
+            
+            # Basic validation - try opening the file with PIL
+            try:
+                with Image.open(file_path) as img:
+                    img_format = img.format
+                    img_size = img.size
+                print(f"Successfully opened image: {os.path.basename(file_path)}, Format: {img_format}, Size: {img_size}")
+            except Exception as e:
+                print(f"Error opening image with PIL: {e}")
+                return error_result
+                
             # Get basic image metadata
-            metadata = self._generate_image_metadata(file_path)
+            try:
+                metadata = self._generate_image_metadata(file_path)
+                print(f"Generated metadata for {os.path.basename(file_path)}")
+            except Exception as e:
+                print(f"Error generating metadata: {e}")
+                metadata = f"Image: {os.path.basename(file_path)}"
             
-            # Perform Hugging Face analysis if available
-            hf_analysis = ""
-            if self.use_huggingface_vision:
-                hf_analysis = self._analyze_image_with_huggingface(file_path)
-            
-            # If Hugging Face analysis is not available, use pixel-level analysis
-            if not hf_analysis:
-                detailed_analysis = self._analyze_image_pixel_level(file_path)
-            else:
-                detailed_analysis = hf_analysis
-            
-            # Extract text using OCR
-            ocr_text = self._extract_text_from_image(file_path)
-            
-            # Also try to get Claude Vision analysis if available
+            # Perform analysis with different methods, catching exceptions for each
+            detailed_analysis = ""
+            ocr_text = ""
             claude_analysis = ""
+            
+            # Try Hugging Face analysis first
+            if self.use_huggingface_vision:
+                try:
+                    print(f"Attempting Hugging Face analysis for {os.path.basename(file_path)}")
+                    hf_analysis = self._analyze_image_with_huggingface(file_path)
+                    if hf_analysis:
+                        detailed_analysis = hf_analysis
+                        print(f"Hugging Face analysis successful")
+                except Exception as e:
+                    print(f"Error in Hugging Face analysis: {e}")
+            
+            # If Hugging Face failed or is unavailable, try pixel-level analysis
+            if not detailed_analysis:
+                try:
+                    print(f"Attempting pixel-level analysis for {os.path.basename(file_path)}")
+                    detailed_analysis = self._analyze_image_pixel_level(file_path)
+                    print(f"Pixel-level analysis successful")
+                except Exception as e:
+                    print(f"Error in pixel-level analysis: {e}")
+                    detailed_analysis = "Image analysis unavailable"
+            
+            # Try OCR
+            try:
+                print(f"Attempting OCR for {os.path.basename(file_path)}")
+                ocr_text = self._extract_text_from_image(file_path)
+                print(f"OCR completed")
+            except Exception as e:
+                print(f"Error in OCR: {e}")
+                ocr_text = "OCR text extraction unavailable"
+            
+            # Try Claude Vision if available
             if self.use_claude_vision:
-                claude_analysis = self._analyze_image_with_claude(file_path)
+                try:
+                    print(f"Attempting Claude Vision analysis for {os.path.basename(file_path)}")
+                    claude_analysis = self._analyze_image_with_claude(file_path)
+                    print(f"Claude Vision analysis successful")
+                except Exception as e:
+                    print(f"Error in Claude Vision analysis: {e}")
             
             # Combine all information
             combined_text = f"Image Metadata: {metadata}\n\n"
@@ -100,10 +152,12 @@ class ImageProcessor:
             else:
                 chunks = [combined_text]
             
+            print(f"Successfully processed image: {os.path.basename(file_path)}, generated {len(chunks)} chunks")
             return chunks
         
         except Exception as e:
-            raise Exception(f"Error processing image: {str(e)}")
+            print(f"Unexpected error processing image: {e}")
+            return error_result
     
     def _analyze_image_pixel_level(self, file_path: str) -> str:
         """

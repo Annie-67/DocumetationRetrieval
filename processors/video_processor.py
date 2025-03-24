@@ -47,22 +47,71 @@ class VideoProcessor:
         Returns:
             List[str]: List of text chunks extracted from the video
         """
+        # Fallback result in case of errors
+        error_result = [f"Error processing video: {os.path.basename(file_path)}. Video analysis features might not be fully available."]
+        
         try:
-            # Extract video metadata
-            metadata = self._extract_video_metadata(file_path)
+            # Check if file exists and is readable
+            if not os.path.exists(file_path):
+                print(f"Error: Video file does not exist: {file_path}")
+                return error_result
+                
+            if not os.access(file_path, os.R_OK):
+                print(f"Error: Video file is not readable: {file_path}")
+                return error_result
             
-            # Sample frames and extract content
-            frame_contents = self._process_video_frames(file_path)
+            # Basic validation - try opening the file with OpenCV
+            try:
+                video = cv2.VideoCapture(file_path)
+                if not video.isOpened():
+                    print(f"Error: Could not open video file with OpenCV: {file_path}")
+                    return error_result
+                video.release()
+                print(f"Successfully opened video: {os.path.basename(file_path)}")
+            except Exception as e:
+                print(f"Error opening video with OpenCV: {e}")
+                return error_result
+                
+            # Process each component with robust error handling
             
-            # Extract audio and transcribe if Hugging Face API is available
+            # 1. Metadata extraction
+            try:
+                print(f"Extracting metadata for {os.path.basename(file_path)}")
+                metadata = self._extract_video_metadata(file_path)
+                print(f"Metadata extraction successful")
+            except Exception as e:
+                print(f"Error extracting video metadata: {e}")
+                metadata = f"Video: {os.path.basename(file_path)}"
+            
+            # 2. Frame content analysis
+            try:
+                print(f"Processing video frames for {os.path.basename(file_path)}")
+                frame_contents = self._process_video_frames(file_path)
+                print(f"Processed {len(frame_contents)} frames")
+            except Exception as e:
+                print(f"Error processing video frames: {e}")
+                frame_contents = ["Frame analysis unavailable"]
+            
+            # 3. Audio transcription
             audio_text = ""
             if self.use_huggingface:
-                audio_text = self._extract_and_transcribe_audio(file_path)
+                try:
+                    print(f"Attempting audio extraction and transcription for {os.path.basename(file_path)}")
+                    audio_text = self._extract_and_transcribe_audio(file_path)
+                    print(f"Audio transcription completed")
+                except Exception as e:
+                    print(f"Error in audio extraction/transcription: {e}")
+                    audio_text = "Audio transcription unavailable"
             
-            # Classify video content if Hugging Face API is available
+            # 4. Video classification
             video_classification = ""
             if self.use_huggingface:
-                video_classification = self._classify_video_content(file_path)
+                try:
+                    print(f"Attempting video classification for {os.path.basename(file_path)}")
+                    video_classification = self._classify_video_content(file_path)
+                    print(f"Video classification completed")
+                except Exception as e:
+                    print(f"Error in video classification: {e}")
             
             # Combine all information
             all_text = metadata + "\n\n"
@@ -81,10 +130,12 @@ class VideoProcessor:
             else:
                 chunks = [all_text]
             
+            print(f"Successfully processed video: {os.path.basename(file_path)}, generated {len(chunks)} chunks")
             return chunks
         
         except Exception as e:
-            raise Exception(f"Error processing video: {str(e)}")
+            print(f"Unexpected error processing video: {e}")
+            return error_result
     
     def _extract_video_metadata(self, file_path: str) -> str:
         """

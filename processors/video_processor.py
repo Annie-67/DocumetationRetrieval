@@ -252,6 +252,197 @@ class VideoProcessor:
             # Fallback if all else fails
             return f"Frame {frame_idx}: Unable to analyze (Error: {str(e)})"
     
+    def _extract_and_transcribe_audio(self, video_path: str) -> str:
+        """
+        Extract audio from video and transcribe it using Hugging Face ASR model
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            str: Transcribed audio text
+        """
+        try:
+            if not self.use_huggingface or not self.hf_api_key:
+                return "Audio transcription unavailable (Hugging Face API not configured)"
+            
+            # Create temporary directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Extract audio to temporary file
+                audio_path = os.path.join(temp_dir, "audio.wav")
+                self._extract_audio_from_video(video_path, audio_path)
+                
+                # Check if audio extraction was successful
+                if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                    return "Audio extraction failed or video contains no audio"
+                
+                # Read the audio file
+                with open(audio_path, "rb") as audio_file:
+                    audio_bytes = audio_file.read()
+                
+                # Send to Hugging Face API for transcription
+                transcription = self._transcribe_audio(audio_bytes)
+                
+                return transcription
+        except Exception as e:
+            return f"Audio transcription failed: {str(e)}"
+    
+    def _extract_audio_from_video(self, video_path: str, output_audio_path: str) -> bool:
+        """
+        Extract audio track from video file using FFmpeg
+        
+        Args:
+            video_path (str): Path to input video
+            output_audio_path (str): Path to output audio file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Check if ffmpeg is installed
+            ffmpeg_path = "/usr/bin/ffmpeg"
+            if not os.path.exists(ffmpeg_path):
+                return False
+                
+            # Construct FFmpeg command to extract audio
+            command = [
+                ffmpeg_path,
+                "-i", video_path,
+                "-vn",  # No video
+                "-acodec", "pcm_s16le",  # PCM 16-bit little-endian
+                "-ar", "16000",  # 16kHz sample rate (common for speech recognition)
+                "-ac", "1",  # Mono channel
+                "-y",  # Overwrite output file if exists
+                output_audio_path
+            ]
+            
+            # Execute command and capture output
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            _, _ = process.communicate()
+            
+            # Check if output file was created
+            return os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 0
+            
+        except Exception:
+            return False
+    
+    def _transcribe_audio(self, audio_bytes: bytes) -> str:
+        """
+        Transcribe audio using Hugging Face Speech-to-Text API
+        
+        Args:
+            audio_bytes (bytes): Raw audio bytes
+            
+        Returns:
+            str: Transcribed text
+        """
+        try:
+            headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+            API_URL = f"https://api-inference.huggingface.co/models/{self.speech_recognition_model}"
+            
+            response = requests.post(API_URL, headers=headers, data=audio_bytes)
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Extract transcription from response
+                if isinstance(result, dict) and "text" in result:
+                    return result["text"]
+                else:
+                    return "Transcription format not recognized"
+            else:
+                return f"Transcription request failed with status {response.status_code}"
+            
+        except Exception as e:
+            return f"Transcription error: {str(e)}"
+    
+    def _classify_video_content(self, video_path: str) -> str:
+        """
+        Classify video content using Hugging Face video classification model
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            str: Video classification results
+        """
+        try:
+            if not self.use_huggingface or not self.hf_api_key:
+                return ""
+            
+            # Sample a few frames from the video
+            video = cv2.VideoCapture(video_path)
+            
+            if not video.isOpened():
+                return "Video classification failed: Could not open video file"
+            
+            frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = video.get(cv2.CAP_PROP_FPS)
+            
+            # Sample frames at regular intervals (try to get about 8 frames)
+            sample_interval = max(1, frame_count // 8)
+            frames = []
+            
+            for frame_idx in range(0, frame_count, sample_interval):
+                video.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                success, frame = video.read()
+                
+                if success:
+                    # Convert BGR to RGB
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(rgb_frame)
+                
+                if len(frames) >= 8:
+                    break
+            
+            video.release()
+            
+            if not frames:
+                return "No frames could be extracted for classification"
+            
+            # Create a temporary file to store frames
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                # Save the middle frame for classification
+                middle_frame = frames[len(frames)//2]
+                pil_image = Image.fromarray(middle_frame)
+                pil_image.save(temp_file.name)
+                temp_file_path = temp_file.name
+            
+            # Read the image file
+            with open(temp_file_path, "rb") as img_file:
+                image_bytes = img_file.read()
+            
+            # Remove temporary file
+            os.unlink(temp_file_path)
+            
+            # Send to Hugging Face API for classification
+            headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+            API_URL = f"https://api-inference.huggingface.co/models/{self.video_classification_model}"
+            
+            response = requests.post(API_URL, headers=headers, data=image_bytes)
+            
+            if response.status_code == 200:
+                results = response.json()
+                
+                # Format classification results
+                classifications = ""
+                if isinstance(results, list):
+                    for result in results[:5]:  # Top 5 classifications
+                        label = result.get("label", "Unknown")
+                        score = result.get("score", 0) * 100
+                        classifications += f"- {label}: {score:.1f}%\n"
+                
+                return classifications
+            else:
+                return f"Classification request failed with status {response.status_code}"
+            
+        except Exception as e:
+            return f"Video classification error: {str(e)}"
+    
     def _chunk_text(self, text: str) -> List[str]:
         """
         Split text into overlapping chunks

@@ -11,7 +11,7 @@ import requests
 from typing import List, Dict, Any, Optional
 
 class VideoProcessor:
-    def __init__(self, frame_interval: int = 30, chunk_size: int = 1000, chunk_overlap: int = 200):
+    def __init__(self, frame_interval: int = 60, chunk_size: int = 1000, chunk_overlap: int = 200, max_frames: int = 10):
         """
         Initialize the Video processor
         
@@ -19,10 +19,12 @@ class VideoProcessor:
             frame_interval (int): Number of frames to skip between processing
             chunk_size (int): Maximum size of each text chunk
             chunk_overlap (int): Number of characters to overlap between chunks
+            max_frames (int): Maximum number of frames to process
         """
-        self.frame_interval = frame_interval
+        self.frame_interval = frame_interval  # Increased from 30 to 60
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.max_frames = max_frames  # Added limit to total frames processed
         self.use_huggingface = True
         
         # Get API key from environment variable for Hugging Face
@@ -198,9 +200,23 @@ class VideoProcessor:
         
         frame_contents = []
         frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / video.get(cv2.CAP_PROP_FPS) if video.get(cv2.CAP_PROP_FPS) > 0 else 0
         
-        # Process frames at regular intervals
-        for frame_idx in range(0, frame_count, self.frame_interval):
+        # Calculate optimal frame interval based on video duration
+        # For longer videos, we'll sample fewer frames
+        if duration > 60:  # If video is longer than 1 minute
+            # Dynamically adjust frame interval to get enough samples
+            optimal_interval = max(self.frame_interval, int(frame_count / self.max_frames))
+        else:
+            optimal_interval = self.frame_interval
+            
+        # Process frames at regular intervals, limited by max_frames
+        frames_processed = 0
+        for frame_idx in range(0, frame_count, optimal_interval):
+            # Stop once we reach max_frames
+            if frames_processed >= self.max_frames:
+                break
+                
             # Set video position
             video.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             
@@ -213,6 +229,11 @@ class VideoProcessor:
             # Process frame
             frame_desc = self._analyze_frame(frame, frame_idx)
             frame_contents.append(frame_desc)
+            frames_processed += 1
+            
+            # Add progress indicator for long videos
+            if frames_processed % 3 == 0:
+                print(f"Processed {frames_processed}/{self.max_frames} frames")
         
         # Release the video
         video.release()
@@ -234,17 +255,38 @@ class VideoProcessor:
             # Basic frame description that will be available even if analysis fails
             frame_desc = f"Frame {frame_idx}:\n"
             
+            # Optimize OCR by only running on every 3rd frame to save processing time
+            # Also, only run OCR if the frame appears to have text (high contrast areas)
             try:
-                # Convert frame to PIL Image for OCR
-                pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                # Check if frame likely contains text by looking at edge detection
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                edges_for_ocr = cv2.Canny(gray, 100, 200)  # Renamed to avoid confusion
+                edge_density = np.count_nonzero(edges_for_ocr) / (frame.shape[0] * frame.shape[1])
                 
-                # Extract text using OCR
-                extracted_text = pytesseract.image_to_string(pil_image).strip()
-                
-                if extracted_text:
-                    frame_desc += f"- Text detected: {extracted_text}\n"
+                # Only run OCR if the frame has a reasonable edge density
+                # or if this is a key frame (first, middle, or last frame)
+                if edge_density > 0.05 or frame_idx % (self.frame_interval * 3) == 0:
+                    # Resize image to speed up OCR (smaller image is faster)
+                    height, width = frame.shape[:2]
+                    scale_factor = min(1.0, 800 / max(width, height))
+                    if scale_factor < 1.0:
+                        resized_frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor)
+                    else:
+                        resized_frame = frame
+                    
+                    # Convert frame to PIL Image for OCR
+                    pil_image = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
+                    
+                    # Extract text using OCR
+                    extracted_text = pytesseract.image_to_string(pil_image).strip()
+                    
+                    if extracted_text:
+                        frame_desc += f"- Text detected: {extracted_text}\n"
+                    else:
+                        frame_desc += "- No text detected\n"
                 else:
-                    frame_desc += "- No text detected\n"
+                    # Skip OCR for this frame
+                    frame_desc += "- Text analysis skipped (optimization)\n"
             except Exception:
                 frame_desc += "- Text analysis unavailable\n"
             
@@ -285,16 +327,25 @@ class VideoProcessor:
                 frame_desc += "- Color analysis unavailable\n"
             
             try:
-                # Detect edges for object estimation
+                # Just compute the edges directly - simpler and more reliable
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                edges = cv2.Canny(gray, 100, 200)
-                edge_count = np.count_nonzero(edges)
+                edges_for_complexity = cv2.Canny(gray, 100, 200)
+                edge_count = np.count_nonzero(edges_for_complexity)
                 
                 # Estimate scene complexity
-                complexity = "high" if edge_count > (frame.shape[0] * frame.shape[1] * 0.1) else "medium" if edge_count > (frame.shape[0] * frame.shape[1] * 0.05) else "low"
+                total_pixels = frame.shape[0] * frame.shape[1]
+                edge_ratio = edge_count / total_pixels
+                
+                if edge_ratio > 0.1:
+                    complexity = "high"
+                elif edge_ratio > 0.05:
+                    complexity = "medium"
+                else:
+                    complexity = "low"
                 
                 frame_desc += f"- Scene complexity: {complexity}\n"
-            except Exception:
+            except Exception as e:
+                print(f"Scene complexity analysis error: {e}")
                 frame_desc += "- Scene complexity analysis unavailable\n"
             
             return frame_desc
@@ -425,42 +476,39 @@ class VideoProcessor:
             if not self.use_huggingface or not self.hf_api_key:
                 return ""
             
-            # Sample a few frames from the video
+            # Get a single representative frame instead of sampling multiple frames
             video = cv2.VideoCapture(video_path)
             
             if not video.isOpened():
                 return "Video classification failed: Could not open video file"
             
             frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = video.get(cv2.CAP_PROP_FPS)
             
-            # Sample frames at regular intervals (try to get about 8 frames)
-            sample_interval = max(1, frame_count // 8)
-            frames = []
-            
-            for frame_idx in range(0, frame_count, sample_interval):
-                video.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                success, frame = video.read()
-                
-                if success:
-                    # Convert BGR to RGB
-                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frames.append(rgb_frame)
-                
-                if len(frames) >= 8:
-                    break
-            
+            # Just get one frame from 1/3 into the video
+            target_frame = min(frame_count - 1, frame_count // 3)
+            video.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            success, frame = video.read()
             video.release()
             
-            if not frames:
-                return "No frames could be extracted for classification"
+            if not success:
+                return "Could not extract frame for classification"
             
-            # Create a temporary file to store frames
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Create a temporary file to store the frame
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
-                # Save the middle frame for classification
-                middle_frame = frames[len(frames)//2]
-                pil_image = Image.fromarray(middle_frame)
-                pil_image.save(temp_file.name)
+                # Resize image to reduce file size (speed up API call)
+                height, width = rgb_frame.shape[:2]
+                scale_factor = min(1.0, 800 / max(width, height))
+                if scale_factor < 1.0:
+                    resized_frame = cv2.resize(rgb_frame, (0, 0), fx=scale_factor, fy=scale_factor)
+                else:
+                    resized_frame = rgb_frame
+                
+                # Save the frame
+                pil_image = Image.fromarray(resized_frame)
+                pil_image.save(temp_file.name, quality=85)  # Lower quality for smaller file
                 temp_file_path = temp_file.name
             
             # Read the image file

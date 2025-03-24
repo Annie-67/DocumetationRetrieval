@@ -1,5 +1,7 @@
 {pkgs}: {
   deps = [
+    pkgs.ffmpeg-full
+    pkgs.libsndfile
     pkgs.zlib
     pkgs.tk
     pkgs.tcl

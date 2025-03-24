@@ -4,7 +4,11 @@ import tempfile
 import numpy as np
 import pytesseract
 from PIL import Image
-from typing import List
+import subprocess
+import base64
+import json
+import requests
+from typing import List, Dict, Any, Optional
 
 class VideoProcessor:
     def __init__(self, frame_interval: int = 30, chunk_size: int = 1000, chunk_overlap: int = 200):
@@ -19,6 +23,19 @@ class VideoProcessor:
         self.frame_interval = frame_interval
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.use_huggingface = True
+        
+        # Get API key from environment variable for Hugging Face
+        try:
+            self.hf_api_key = os.environ.get("HUGGINGFACE_API_KEY")
+            if not self.hf_api_key:
+                self.use_huggingface = False
+        except Exception:
+            self.use_huggingface = False
+        
+        # Define Hugging Face models to use
+        self.speech_recognition_model = "facebook/wav2vec2-large-960h-lv60-self"
+        self.video_classification_model = "MCG-NJU/videomae-base-finetuned-kinetics"
     
     def process(self, file_path: str) -> List[str]:
         """
@@ -37,8 +54,26 @@ class VideoProcessor:
             # Sample frames and extract content
             frame_contents = self._process_video_frames(file_path)
             
-            # Combine metadata and frame contents
-            all_text = metadata + "\n\n" + "\n\n".join(frame_contents)
+            # Extract audio and transcribe if Hugging Face API is available
+            audio_text = ""
+            if self.use_huggingface:
+                audio_text = self._extract_and_transcribe_audio(file_path)
+            
+            # Classify video content if Hugging Face API is available
+            video_classification = ""
+            if self.use_huggingface:
+                video_classification = self._classify_video_content(file_path)
+            
+            # Combine all information
+            all_text = metadata + "\n\n"
+            
+            if video_classification:
+                all_text += "Video Classification:\n" + video_classification + "\n\n"
+                
+            all_text += "Visual Content Analysis:\n" + "\n\n".join(frame_contents) + "\n\n"
+            
+            if audio_text:
+                all_text += "Audio Transcription:\n" + audio_text
             
             # Split into chunks
             if len(all_text) > self.chunk_size:

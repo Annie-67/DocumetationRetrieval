@@ -8,6 +8,8 @@ import anthropic
 from anthropic import Anthropic
 from typing import List, Dict, Any, Tuple
 import math
+import json
+import requests
 
 class ImageProcessor:
     def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
@@ -21,18 +23,33 @@ class ImageProcessor:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.use_claude_vision = True
+        self.use_huggingface_vision = True
         
         # Get API key from environment variable for Claude Vision
         try:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if api_key:
-                self.claude_client = Anthropic(api_key=api_key)
+            anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if anthropic_api_key:
+                self.claude_client = Anthropic(api_key=anthropic_api_key)
                 # Note: the newest Anthropic model is "claude-3-5-sonnet-20241022" which was released October 22, 2024
                 self.claude_model = "claude-3-5-sonnet-20241022"
             else:
                 self.use_claude_vision = False
         except Exception:
             self.use_claude_vision = False
+            
+        # Get API key from environment variable for Hugging Face
+        try:
+            self.hf_api_key = os.environ.get("HUGGINGFACE_API_KEY")
+            if not self.hf_api_key:
+                self.use_huggingface_vision = False
+        except Exception:
+            self.use_huggingface_vision = False
+            
+        # Define Hugging Face models to use
+        self.image_captioning_model = "Salesforce/blip-image-captioning-large"
+        self.image_classification_model = "google/vit-base-patch16-224"
+        self.object_detection_model = "facebook/detr-resnet-50"
+        self.ocr_model = "microsoft/trocr-base-handwritten"
     
     def process(self, file_path: str) -> List[str]:
         """
@@ -48,8 +65,16 @@ class ImageProcessor:
             # Get basic image metadata
             metadata = self._generate_image_metadata(file_path)
             
-            # Perform detailed image analysis
-            detailed_analysis = self._analyze_image_pixel_level(file_path)
+            # Perform Hugging Face analysis if available
+            hf_analysis = ""
+            if self.use_huggingface_vision:
+                hf_analysis = self._analyze_image_with_huggingface(file_path)
+            
+            # If Hugging Face analysis is not available, use pixel-level analysis
+            if not hf_analysis:
+                detailed_analysis = self._analyze_image_pixel_level(file_path)
+            else:
+                detailed_analysis = hf_analysis
             
             # Extract text using OCR
             ocr_text = self._extract_text_from_image(file_path)
@@ -559,6 +584,148 @@ class ImageProcessor:
             
         except Exception as e:
             return f"Composition analysis unavailable: {str(e)}"
+    
+    def _analyze_image_with_huggingface(self, file_path: str) -> str:
+        """
+        Analyze image using Hugging Face vision models
+        
+        Args:
+            file_path (str): Path to the image file
+            
+        Returns:
+            str: Detailed analysis from Hugging Face models
+        """
+        try:
+            if not self.use_huggingface_vision or not self.hf_api_key:
+                return ""
+            
+            # Read image file and encode as base64
+            with open(file_path, "rb") as img_file:
+                image_bytes = img_file.read()
+                base64_image = base64.b64encode(image_bytes).decode("utf-8")
+            
+            # 1. Image captioning using BLIP model
+            caption = self._get_image_caption(image_bytes)
+            
+            # 2. Image classification using ViT model
+            classifications = self._classify_image(image_bytes)
+            
+            # 3. Object detection using DETR model
+            objects = self._detect_objects(image_bytes)
+            
+            # Combine all analyses
+            hf_analysis = f"Image Caption: {caption}\n\n"
+            
+            if classifications:
+                hf_analysis += "Classification Results:\n"
+                for label, score in classifications:
+                    hf_analysis += f"- {label}: {score:.1f}%\n"
+                hf_analysis += "\n"
+            
+            if objects:
+                hf_analysis += "Detected Objects:\n"
+                for obj in objects:
+                    hf_analysis += f"- {obj['label']} (confidence: {obj['score']:.1f}%)\n"
+            
+            return hf_analysis
+            
+        except Exception as e:
+            return f"Hugging Face analysis unavailable: {str(e)}"
+    
+    def _get_image_caption(self, image_bytes: bytes) -> str:
+        """
+        Get image caption using Hugging Face's BLIP model
+        
+        Args:
+            image_bytes (bytes): Raw image bytes
+            
+        Returns:
+            str: Generated caption
+        """
+        try:
+            headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+            API_URL = f"https://api-inference.huggingface.co/models/{self.image_captioning_model}"
+            
+            response = requests.post(API_URL, headers=headers, data=image_bytes)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    return result[0].get("generated_text", "No caption generated")
+                elif isinstance(result, dict):
+                    return result.get("generated_text", "No caption generated")
+                else:
+                    return "Caption unavailable"
+            else:
+                return f"Caption request failed with status {response.status_code}"
+        
+        except Exception as e:
+            return f"Caption generation error: {str(e)}"
+    
+    def _classify_image(self, image_bytes: bytes) -> List[Tuple[str, float]]:
+        """
+        Classify image using Hugging Face's ViT model
+        
+        Args:
+            image_bytes (bytes): Raw image bytes
+            
+        Returns:
+            List[Tuple[str, float]]: List of (label, score) tuples
+        """
+        try:
+            headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+            API_URL = f"https://api-inference.huggingface.co/models/{self.image_classification_model}"
+            
+            response = requests.post(API_URL, headers=headers, data=image_bytes)
+            
+            if response.status_code == 200:
+                results = response.json()
+                
+                # Format results as list of (label, score) tuples
+                return [(item["label"], item["score"] * 100) for item in results[:5]]
+            else:
+                return []
+        
+        except Exception:
+            return []
+    
+    def _detect_objects(self, image_bytes: bytes) -> List[Dict[str, Any]]:
+        """
+        Detect objects in image using Hugging Face's DETR model
+        
+        Args:
+            image_bytes (bytes): Raw image bytes
+            
+        Returns:
+            List[Dict[str, Any]]: List of detected objects with labels and scores
+        """
+        try:
+            headers = {"Authorization": f"Bearer {self.hf_api_key}"}
+            API_URL = f"https://api-inference.huggingface.co/models/{self.object_detection_model}"
+            
+            response = requests.post(API_URL, headers=headers, data=image_bytes)
+            
+            if response.status_code == 200:
+                results = response.json()
+                
+                # Format results as list of detection dictionaries
+                detections = []
+                for item in results:
+                    detections.append({
+                        "label": item["label"],
+                        "score": item["score"] * 100,
+                        "box": item["box"]
+                    })
+                
+                # Sort by confidence score
+                detections.sort(key=lambda x: x["score"], reverse=True)
+                
+                return detections[:10]  # Return top 10 detections
+            else:
+                return []
+        
+        except Exception:
+            return []
     
     def _analyze_image_with_claude(self, file_path: str) -> str:
         """

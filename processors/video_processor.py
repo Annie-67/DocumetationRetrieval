@@ -144,62 +144,78 @@ class VideoProcessor:
         Returns:
             str: Description of the frame
         """
-        # Convert frame to PIL Image for OCR
-        pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        try:
+            # Basic frame description that will be available even if analysis fails
+            frame_desc = f"Frame {frame_idx}:\n"
+            
+            try:
+                # Convert frame to PIL Image for OCR
+                pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                
+                # Extract text using OCR
+                extracted_text = pytesseract.image_to_string(pil_image).strip()
+                
+                if extracted_text:
+                    frame_desc += f"- Text detected: {extracted_text}\n"
+                else:
+                    frame_desc += "- No text detected\n"
+            except Exception:
+                frame_desc += "- Text analysis unavailable\n"
+            
+            try:
+                # Basic frame analysis
+                frame_brightness = np.mean(frame)
+                frame_desc += f"- Brightness: {frame_brightness:.1f}/255\n"
+                
+                # Convert BGR to HSV for color analysis
+                hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                
+                # Calculate color distribution
+                hue_values = hsv_frame[:, :, 0]
+                saturation_values = hsv_frame[:, :, 1]
+                avg_hue = np.mean(hue_values)
+                avg_saturation = np.mean(saturation_values)
+                
+                # Determine dominant color
+                if avg_saturation < 50:
+                    if frame_brightness < 50:
+                        dominant_color = "dark/black"
+                    elif frame_brightness > 200:
+                        dominant_color = "white"
+                    else:
+                        dominant_color = "gray"
+                else:
+                    if 0 <= avg_hue < 30 or 150 <= avg_hue <= 180:
+                        dominant_color = "red"
+                    elif 30 <= avg_hue < 90:
+                        dominant_color = "green/yellow"
+                    elif 90 <= avg_hue < 150:
+                        dominant_color = "blue"
+                    else:
+                        dominant_color = "unknown"
+                
+                frame_desc += f"- Dominant color: {dominant_color}\n"
+            except Exception:
+                frame_desc += "- Color analysis unavailable\n"
+            
+            try:
+                # Detect edges for object estimation
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, 100, 200)
+                edge_count = np.count_nonzero(edges)
+                
+                # Estimate scene complexity
+                complexity = "high" if edge_count > (frame.shape[0] * frame.shape[1] * 0.1) else "medium" if edge_count > (frame.shape[0] * frame.shape[1] * 0.05) else "low"
+                
+                frame_desc += f"- Scene complexity: {complexity}\n"
+            except Exception:
+                frame_desc += "- Scene complexity analysis unavailable\n"
+            
+            return frame_desc
         
-        # Extract text using OCR
-        extracted_text = pytesseract.image_to_string(pil_image).strip()
-        
-        # Basic frame analysis
-        frame_brightness = np.mean(frame)
-        
-        # Convert BGR to HSV for color analysis
-        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Calculate color distribution
-        hue_values = hsv_frame[:, :, 0]
-        saturation_values = hsv_frame[:, :, 1]
-        avg_hue = np.mean(hue_values)
-        avg_saturation = np.mean(saturation_values)
-        
-        # Determine dominant color
-        if avg_saturation < 50:
-            if frame_brightness < 50:
-                dominant_color = "dark/black"
-            elif frame_brightness > 200:
-                dominant_color = "white"
-            else:
-                dominant_color = "gray"
-        else:
-            if 0 <= avg_hue < 30 or 150 <= avg_hue <= 180:
-                dominant_color = "red"
-            elif 30 <= avg_hue < 90:
-                dominant_color = "green/yellow"
-            elif 90 <= avg_hue < 150:
-                dominant_color = "blue"
-            else:
-                dominant_color = "unknown"
-        
-        # Detect edges for object estimation
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 100, 200)
-        edge_count = np.count_nonzero(edges)
-        
-        # Estimate scene complexity
-        complexity = "high" if edge_count > (frame.shape[0] * frame.shape[1] * 0.1) else "medium" if edge_count > (frame.shape[0] * frame.shape[1] * 0.05) else "low"
-        
-        # Create frame description
-        frame_desc = f"Frame {frame_idx}:\n"
-        frame_desc += f"- Brightness: {frame_brightness:.1f}/255\n"
-        frame_desc += f"- Dominant color: {dominant_color}\n"
-        frame_desc += f"- Scene complexity: {complexity}\n"
-        
-        if extracted_text:
-            frame_desc += f"- Text detected: {extracted_text}\n"
-        else:
-            frame_desc += "- No text detected\n"
-        
-        return frame_desc
+        except Exception as e:
+            # Fallback if all else fails
+            return f"Frame {frame_idx}: Unable to analyze (Error: {str(e)})"
     
     def _chunk_text(self, text: str) -> List[str]:
         """

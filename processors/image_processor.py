@@ -88,10 +88,19 @@ class ImageProcessor:
         # Convert PIL image to OpenCV format
         image_np = np.array(image)
         
-        # Convert to grayscale if the image is in color
-        if len(image_np.shape) > 2 and image_np.shape[2] == 3:
-            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        # Handle images with transparency (4 channels) or other color formats
+        if len(image_np.shape) > 2:
+            if image_np.shape[2] == 4:  # RGBA image
+                # Convert RGBA to RGB first
+                image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
+                gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            elif image_np.shape[2] == 3:  # RGB image
+                gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            else:
+                # For other unusual formats, just take the first channel
+                gray = image_np[:, :, 0]
         else:
+            # Already grayscale
             gray = image_np
         
         # Apply thresholding to get binary image
@@ -124,34 +133,40 @@ class ImageProcessor:
             format_type = image.format
             mode = image.mode
             
-            # Analyze image content
-            image_np = np.array(image)
-            
-            # Check if image is grayscale or color
-            image_type = "Grayscale" if len(image_np.shape) < 3 else "Color"
-            
-            # Check if image might contain text
-            has_text = "Yes" if self._might_contain_text(image_np) else "Unknown"
-            
             # File information
             file_name = os.path.basename(file_path)
             file_size = os.path.getsize(file_path) / 1024  # Size in KB
             
-            # Generate description
-            description = (
+            # Generate basic description first (in case analyzing content fails)
+            basic_description = (
                 f"Filename: {file_name}, "
                 f"Dimensions: {width}x{height} pixels, "
                 f"Format: {format_type}, "
                 f"Mode: {mode}, "
-                f"Type: {image_type}, "
-                f"May contain text: {has_text}, "
                 f"File size: {file_size:.1f} KB"
             )
+            
+            try:
+                # Analyze image content in a separate try block
+                image_np = np.array(image)
+                
+                # Check if image is grayscale or color
+                image_type = "Grayscale" if len(image_np.shape) < 3 else "Color"
+                
+                # Check if image might contain text
+                has_text = "Yes" if self._might_contain_text(image_np) else "Unknown"
+                
+                # Add content analysis to description
+                description = basic_description + f", Type: {image_type}, May contain text: {has_text}"
+                
+            except Exception:
+                # If content analysis fails, just use the basic description
+                description = basic_description + ", (Content analysis unavailable)"
             
             return description
         
         except Exception as e:
-            return f"Unable to generate image description: {str(e)}"
+            return f"Basic image information: {os.path.basename(file_path)}, Error: {str(e)}"
     
     def _might_contain_text(self, image_np):
         """
@@ -163,23 +178,37 @@ class ImageProcessor:
         Returns:
             bool: True if the image might contain text
         """
-        # Convert to grayscale if needed
-        if len(image_np.shape) > 2 and image_np.shape[2] == 3:
-            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image_np
+        try:
+            # Handle different image formats for grayscale conversion
+            if len(image_np.shape) > 2:
+                if image_np.shape[2] == 4:  # RGBA image
+                    # Convert RGBA to RGB first
+                    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
+                    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+                elif image_np.shape[2] == 3:  # RGB image
+                    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+                else:
+                    # For other unusual formats, just take the first channel
+                    gray = image_np[:, :, 0]
+            else:
+                # Already grayscale
+                gray = image_np
+            
+            # Apply edge detection
+            edges = cv2.Canny(gray, 100, 200)
+            
+            # Count the number of edges
+            edge_count = np.count_nonzero(edges)
+            
+            # Calculate edge density
+            edge_density = edge_count / (gray.shape[0] * gray.shape[1])
+            
+            # Images with text typically have higher edge density
+            return edge_density > 0.05
         
-        # Apply edge detection
-        edges = cv2.Canny(gray, 100, 200)
-        
-        # Count the number of edges
-        edge_count = np.count_nonzero(edges)
-        
-        # Calculate edge density
-        edge_density = edge_count / (gray.shape[0] * gray.shape[1])
-        
-        # Images with text typically have higher edge density
-        return edge_density > 0.05
+        except Exception:
+            # If any error occurs in detection, return False
+            return False
     
     def _chunk_text(self, text: str) -> List[str]:
         """

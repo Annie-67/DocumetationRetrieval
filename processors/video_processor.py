@@ -8,6 +8,8 @@ import subprocess
 import base64
 import json
 import requests
+import openai
+from io import BytesIO
 from typing import List, Dict, Any, Optional
 
 class VideoProcessor:
@@ -21,23 +23,41 @@ class VideoProcessor:
             chunk_overlap (int): Number of characters to overlap between chunks
             max_frames (int): Maximum number of frames to process
         """
-        self.frame_interval = frame_interval  # Increased from 30 to 60
+        self.frame_interval = frame_interval
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.max_frames = max_frames  # Added limit to total frames processed
-        self.use_huggingface = True
+        self.max_frames = max_frames
         
-        # Get API key from environment variable for Hugging Face
+        # Flags for API availability
+        self.use_huggingface = True
+        self.use_openai = True
+        
+        # Get API keys from environment variables
         try:
             self.hf_api_key = os.environ.get("HUGGINGFACE_API_KEY")
             if not self.hf_api_key:
                 self.use_huggingface = False
+                print("Warning: HUGGINGFACE_API_KEY not set, using OpenAI for video analysis")
         except Exception:
             self.use_huggingface = False
         
-        # Define Hugging Face models to use
-        self.speech_recognition_model = "facebook/wav2vec2-large-960h-lv60-self"
-        self.video_classification_model = "MCG-NJU/videomae-base-finetuned-kinetics"
+        try:
+            self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+            if not self.openai_api_key:
+                self.use_openai = False
+                print("Warning: OPENAI_API_KEY not set, using Hugging Face for video analysis")
+            else:
+                # Initialize OpenAI client
+                self.openai_client = openai.OpenAI(api_key=self.openai_api_key)
+        except Exception as e:
+            print(f"Error initializing OpenAI: {e}")
+            self.use_openai = False
+        
+        # Define model names
+        self.speech_recognition_model = "facebook/wav2vec2-large-960h-lv60-self"  # Hugging Face fallback
+        self.video_classification_model = "MCG-NJU/videomae-base-finetuned-kinetics"  # Hugging Face fallback
+        self.openai_vision_model = "gpt-4-vision-preview"  # For analyzing frames
+        self.openai_whisper_model = "whisper-1"  # For audio transcription
     
     def process(self, file_path: str) -> List[str]:
         """
@@ -96,24 +116,32 @@ class VideoProcessor:
             
             # 3. Audio transcription
             audio_text = ""
-            if self.use_huggingface:
-                try:
-                    print(f"Attempting audio extraction and transcription for {os.path.basename(file_path)}")
+            try:
+                print(f"Attempting audio extraction and transcription for {os.path.basename(file_path)}")
+                if self.use_openai:  # Prefer OpenAI Whisper if available
+                    audio_text = self._extract_and_transcribe_audio_with_whisper(file_path)
+                elif self.use_huggingface:  # Fall back to Hugging Face
                     audio_text = self._extract_and_transcribe_audio(file_path)
-                    print(f"Audio transcription completed")
-                except Exception as e:
-                    print(f"Error in audio extraction/transcription: {e}")
-                    audio_text = "Audio transcription unavailable"
+                else:
+                    audio_text = "Audio transcription unavailable (no API keys configured)"
+                print(f"Audio transcription completed")
+            except Exception as e:
+                print(f"Error in audio extraction/transcription: {e}")
+                audio_text = "Audio transcription unavailable"
             
-            # 4. Video classification
+            # 4. Video classification and content analysis
             video_classification = ""
-            if self.use_huggingface:
-                try:
-                    print(f"Attempting video classification for {os.path.basename(file_path)}")
+            try:
+                print(f"Attempting video classification for {os.path.basename(file_path)}")
+                if self.use_openai:  # Prefer OpenAI Vision API if available
+                    video_classification = self._classify_video_with_vision(file_path)
+                elif self.use_huggingface:  # Fall back to Hugging Face
                     video_classification = self._classify_video_content(file_path)
-                    print(f"Video classification completed")
-                except Exception as e:
-                    print(f"Error in video classification: {e}")
+                else:
+                    video_classification = "Video classification unavailable (no API keys configured)"
+                print(f"Video classification completed")
+            except Exception as e:
+                print(f"Error in video classification: {e}")
             
             # Combine all information
             all_text = metadata + "\n\n"

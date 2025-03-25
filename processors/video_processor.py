@@ -615,3 +615,192 @@ class VideoProcessor:
                 break
         
         return chunks
+        
+    def _extract_and_transcribe_audio_with_whisper(self, video_path: str) -> str:
+        """
+        Extract audio from video and transcribe it using OpenAI's Whisper model
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            str: Transcribed audio text
+        """
+        try:
+            if not self.use_openai:
+                return "Audio transcription unavailable (OpenAI API not configured)"
+            
+            # Create temporary directory for audio extraction
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Extract audio to temporary file
+                audio_path = os.path.join(temp_dir, "audio.mp3")  # Using mp3 for Whisper
+                
+                # Extract audio using FFmpeg
+                success = self._extract_audio_from_video(video_path, audio_path)
+                
+                if not success or not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+                    return "Audio extraction failed or video contains no audio"
+                
+                # Send to OpenAI Whisper API for transcription
+                with open(audio_path, "rb") as audio_file:
+                    try:
+                        print("Sending audio to OpenAI Whisper...")
+                        response = self.openai_client.audio.transcriptions.create(
+                            model=self.openai_whisper_model,
+                            file=audio_file
+                        )
+                        # Extract transcription
+                        if hasattr(response, 'text'):
+                            return response.text
+                        else:
+                            return str(response)
+                    except Exception as e:
+                        print(f"OpenAI Whisper transcription error: {e}")
+                        return f"Transcription error: {str(e)}"
+        except Exception as e:
+            print(f"Error in Whisper transcription pipeline: {e}")
+            return f"Audio transcription failed: {str(e)}"
+    
+    def _classify_video_with_vision(self, video_path: str) -> str:
+        """
+        Analyze video content using OpenAI's Vision API with selected frames
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            str: Video content analysis results
+        """
+        try:
+            if not self.use_openai:
+                return "Video analysis unavailable (OpenAI API not configured)"
+            
+            # Extract a sample of frames from the video for analysis
+            video = cv2.VideoCapture(video_path)
+            
+            if not video.isOpened():
+                return "Error: Could not open video file."
+            
+            # Get video properties
+            frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = video.get(cv2.CAP_PROP_FPS)
+            duration = frame_count / fps if fps > 0 else 0
+            
+            # Calculate optimal frame interval to extract representative frames
+            # We'll use fewer frames for the OpenAI API to control costs
+            max_vision_frames = min(3, self.max_frames)  # Limit to 3 frames max for API cost reasons
+            
+            if duration > 60:  # Longer than 1 minute
+                # Space frames evenly through video
+                sample_points = [int(i * frame_count / max_vision_frames) for i in range(max_vision_frames)]
+            else:
+                # For shorter videos, take beginning, middle, and end if possible
+                sample_points = [0]
+                if frame_count > 10:  # Ensure there are enough frames
+                    sample_points.append(frame_count // 2)
+                if frame_count > 20:
+                    sample_points.append(frame_count - 1)
+            
+            # Extract the frames
+            frames = []
+            for frame_idx in sample_points:
+                video.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                success, frame = video.read()
+                if success:
+                    # Convert frame to PNG format in memory
+                    _, buffer = cv2.imencode('.png', frame)
+                    image_bytes = buffer.tobytes()
+                    
+                    # Convert to base64 for API
+                    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+                    frames.append({
+                        "frame_idx": frame_idx,
+                        "time": frame_idx / fps if fps > 0 else 0,
+                        "base64": base64_image
+                    })
+            
+            video.release()
+            
+            if not frames:
+                return "Could not extract frames from video."
+            
+            # Process frames with Vision API
+            results = []
+            for frame_data in frames:
+                try:
+                    # Prepare the message content
+                    content = [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"This is frame {frame_data['frame_idx']} from a video, "
+                                f"at approximately {frame_data['time']:.2f} seconds. "
+                                f"Analyze this frame in detail and describe what you see: "
+                                f"objects, actions, scene type, text visible, people, colors, and atmosphere. "
+                                f"If there's any text visible in the image, transcribe it exactly."
+                            )
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{frame_data['base64']}"
+                            }
+                        }
+                    ]
+                    
+                    # Call OpenAI Vision API
+                    response = self.openai_client.chat.completions.create(
+                        model=self.openai_vision_model,
+                        messages=[
+                            {"role": "system", "content": "You are a detailed video frame analyzer. Describe what you see in the frame with precision."},
+                            {"role": "user", "content": content}
+                        ],
+                        max_tokens=1000
+                    )
+                    
+                    # Extract and format the response
+                    if hasattr(response, 'choices') and len(response.choices) > 0:
+                        frame_analysis = response.choices[0].message.content
+                        timestamp = f"{frame_data['time']:.2f}s"
+                        results.append(f"Frame at {timestamp}:\n{frame_analysis}")
+                    else:
+                        results.append(f"Frame at {frame_data['time']:.2f}s: Analysis failed")
+                except Exception as e:
+                    print(f"Error analyzing frame with OpenAI Vision: {e}")
+                    results.append(f"Frame at {frame_data['time']:.2f}s: Analysis error: {str(e)}")
+            
+            # Combine results into a detailed analysis
+            if results:
+                summary_prompt = (
+                    "Based on the analyzed frames, provide an overall summary of this video. "
+                    "What is the main content, style, and purpose of this video? "
+                    "Is it professional, educational, entertainment, etc.? "
+                    "What subjects or topics does it appear to cover?"
+                )
+                
+                try:
+                    # Create a summary using the GPT model
+                    summary_response = self.openai_client.chat.completions.create(
+                        model="gpt-4-turbo-preview",  # Using GPT-4 for better summarization
+                        messages=[
+                            {"role": "system", "content": "You summarize video content based on frame analysis."},
+                            {"role": "user", "content": summary_prompt + "\n\n" + "\n\n".join(results)}
+                        ],
+                        max_tokens=500
+                    )
+                    
+                    if hasattr(summary_response, 'choices') and len(summary_response.choices) > 0:
+                        summary = summary_response.choices[0].message.content
+                        final_result = f"Video Analysis Summary:\n{summary}\n\nDetailed Frame Analysis:\n" + "\n\n".join(results)
+                    else:
+                        final_result = "Frame Analysis:\n" + "\n\n".join(results)
+                except Exception as e:
+                    print(f"Error creating video summary: {e}")
+                    final_result = "Frame Analysis:\n" + "\n\n".join(results)
+                
+                return final_result
+            else:
+                return "No frame analysis results available."
+        except Exception as e:
+            print(f"Error in OpenAI Vision analysis: {e}")
+            return f"Video analysis failed: {str(e)}"

@@ -1,5 +1,5 @@
-﻿# DocumentRetrievalChatbot
-# 📄 DocumentRetrievalChatbot
+
+# DocumentRetrievalChatbot
 
 A **Retrieval-Augmented Generation (RAG)** assistant that handles multiple document formats including **PDFs, DOCX, CSVs, images, and videos**—all **without using LangChain**. The project uses **Streamlit** for the frontend and integrates **Claude API** for intelligent response generation.
 
@@ -29,26 +29,26 @@ A **Retrieval-Augmented Generation (RAG)** assistant that handles multiple docum
 
 ---
 
-## ✨ Features
+##  Features
 
-### ✅ LangChain-Free Implementation
+### LangChain-Free Implementation
 - Entirely custom pipeline
 - No dependency on third-party orchestration
 
-### 📁 Multi-Modal File Support
+### Multi-Modal File Support
 - PDFs, DOCX  
 - CSV files  
 - Images (via OCR)  
 - Videos (via Whisper transcription)
 
-### 🔍 Custom RAG Features
+### Custom RAG Features
 - Chunking with overlap for better context
 - FAISS-based vector similarity search
 - Context-aware Claude API response generation
 
 ---
 
-## ⚙️ Technical Breakdown
+## Technical Breakdown
 
 ### 1. Document Processing
 def process(self, file_path: str) -> List[str]:

@@ -3,6 +3,9 @@ import os
 import tempfile
 import pandas as pd
 from io import BytesIO
+#from dotenv import load_dotenv
+from typing_extensions import TypeIs
+#load_dotenv()
 
 # Import processors
 from processors.pdf_processor import PDFProcessor
@@ -15,6 +18,7 @@ from processors.video_processor import VideoProcessor
 from utils.embeddings import EmbeddingModel
 from utils.rag import RAGPipeline
 from utils.claude_api import ClaudeAPI
+
 
 # Page configuration
 st.set_page_config(
@@ -50,6 +54,33 @@ if "rag_pipeline" not in st.session_state:
 
 if "claude_api" not in st.session_state:
     st.session_state.claude_api = ClaudeAPI()
+
+# Custom CSS for blue theme
+st.markdown(
+    """
+    <style>
+    .chat-message {
+        border-radius: 10px;
+        padding: 10px;
+        margin: 5px 0;
+    }
+    .user {
+        background-color: #e1f5fe;
+        color: #0d47a1;
+        text-align: left;
+    }
+    .assistant {
+        background-color: #bbdefb;
+        color: #0d47a1;
+        text-align: left;
+    }
+    .sidebar .sidebar-content {
+        background-color: #e3f2fd;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # Display title and introduction
 st.title("📄 Multi-Document RAG Chatbot")
@@ -172,7 +203,7 @@ st.header("Chat")
 # Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.write(message["content"])
+        st.markdown(f'<div class="chat-message {message["role"]}">{message["content"]}</div>', unsafe_allow_html=True)
         
         # Show sources if available
         if "sources" in message and message["sources"]:
@@ -188,7 +219,7 @@ if user_input := st.chat_input("Ask a question about your documents"):
     
     # Display user message
     with st.chat_message("user"):
-        st.write(user_input)
+        st.markdown(f'<div class="chat-message user">{user_input}</div>', unsafe_allow_html=True)
     
     # Generate and display assistant response
     with st.chat_message("assistant"):
@@ -210,7 +241,7 @@ if user_input := st.chat_input("Ask a question about your documents"):
                 sources = [{"source": doc["metadata"]["source"], "content": doc["content"]} for doc in relevant_docs]
             
             # Display response
-            st.write(response)
+            st.markdown(f'<div class="chat-message assistant">{response}</div>', unsafe_allow_html=True)
             
             # Show sources if available
             if sources:

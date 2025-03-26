@@ -170,7 +170,6 @@ numpy==1.26.3
 numpy-financial==1.0.0
 olefile==0.46
 openai==1.68.2
-opencv-python==4.9.0.80
 opencv-python-headless==4.10.0.84
 openpyxl==3.1.2
 opt-einsum==3.3.0
